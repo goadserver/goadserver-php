@@ -26,6 +26,14 @@ a public GitHub repository under the `goadserver` organization. The
 same tarball is also embedded in the API server and downloadable from
 `/api/public/sdk/<lang>.tgz` — useful when GitHub is unreachable.
 
+> **Per-network host.** The default `https://up.go-adserver.com`
+> baked into the published SDKs is a reference host. Every white-label
+> tenant runs on its own panel domain — override the host on first use
+> (`setHost()` / `Configuration.host` / `basePath` etc.). Or, fetch the
+> spec from your own tenant (`/api/public/openapi.yaml` returns it with
+> *your* hostname as the default) and regenerate the SDK locally — the
+> regenerated client has your URL baked in.
+
 - **PHP** — `github.com/goadserver/goadserver-php`
   (namespace `GoAdServer\\Api`, composer name `goadserver/sdk`).
 
@@ -36,7 +44,7 @@ same tarball is also embedded in the API server and downloadable from
 
   ```php
   $cfg = GoAdServer\\Api\\Configuration::getDefaultConfiguration()
-          ->setHost('https://up.goadserver.com')
+          ->setHost('https://up.go-adserver.com')
           ->setAccessToken('gas_live_…');
   $api = new GoAdServer\\Api\\Api\\AccountAPIApi(null, $cfg);
   $me  = $api->apiV1AccountGet();
@@ -52,7 +60,7 @@ same tarball is also embedded in the API server and downloadable from
   import gas \"github.com/goadserver/goadserver-go\"
 
   cfg := gas.NewConfiguration()
-  cfg.Servers = gas.ServerConfigurations{{URL: \"https://up.goadserver.com\"}}
+  cfg.Servers = gas.ServerConfigurations{{URL: \"https://up.go-adserver.com\"}}
   cli := gas.NewAPIClient(cfg)
   ctx := context.WithValue(context.Background(),
       gas.ContextAccessToken, \"gas_live_…\")
@@ -70,7 +78,7 @@ same tarball is also embedded in the API server and downloadable from
   from goadserver import ApiClient, Configuration
   from goadserver.api import AccountApi, CampaignsApi
 
-  cfg = Configuration(host=\"https://up.goadserver.com\")
+  cfg = Configuration(host=\"https://up.go-adserver.com\")
   cfg.access_token = \"gas_live_…\"
   client = ApiClient(cfg)
 
@@ -90,7 +98,7 @@ same tarball is also embedded in the API server and downloadable from
     from \"goadserver-sdk\";
 
   const cfg = new Configuration({
-    basePath: \"https://up.goadserver.com\",
+    basePath: \"https://up.go-adserver.com\",
     accessToken: \"gas_live_…\",
   });
 
@@ -107,7 +115,7 @@ reach GitHub, every SDK's source is also served as a tarball from the
 API host:
 
 ```bash
-curl -O https://up.goadserver.com/api/public/sdk/python.tgz
+curl -O https://up.go-adserver.com/api/public/sdk/python.tgz
 tar xzf python.tgz && pip install ./python
 ```
 
@@ -183,7 +191,7 @@ try {
 
 ## API Endpoints
 
-All URIs are relative to *https://up.goadserver.com*
+All URIs are relative to *https://up.go-adserver.com*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------

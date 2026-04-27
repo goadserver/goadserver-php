@@ -2,7 +2,7 @@
 
 Read publisher ad zones + on/off toggle.
 
-All URIs are relative to https://up.goadserver.com, except if the operation defines another base path.
+All URIs are relative to https://up.go-adserver.com, except if the operation defines another base path.
 
 | Method | HTTP request | Description |
 | ------------- | ------------- | ------------- |
