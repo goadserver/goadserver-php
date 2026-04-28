@@ -84,18 +84,6 @@ class AdspacesApiTest extends TestCase
     }
 
     /**
-     * Test case for apiV1AdspacesIdActivePatch
-     *
-     * Activate or deactivate an adspace..
-     *
-     */
-    public function testApiV1AdspacesIdActivePatch()
-    {
-        // TODO: implement
-        self::markTestIncomplete('Not implemented');
-    }
-
-    /**
      * Test case for apiV1AdspacesIdGet
      *
      * Get a single adspace..
