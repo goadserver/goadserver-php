@@ -1,5 +1,7 @@
 # GoAdServerApi
 
+> Official PHP client for the REST API of [GoAdserver](https://www.goadserver.com), the hosted ad server. API documentation and how to create an API key: [GoAdserver API docs](https://www.goadserver.com/docs/api-keys/).
+
 Public REST API for advertisers and publishers on the GoAdServer platform.
 
 **Authentication.** All endpoints (except `/api/public/_*`) require an API
