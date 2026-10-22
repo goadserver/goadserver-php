@@ -5,9 +5,11 @@
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
 **title** | **string** |  | [optional]
+**name** | **string** | Alias of title. | [optional]
 **sort_type** | **string** |  | [optional]
 **conv_type** | **int** |  | [optional]
 **tags** | **string** |  | [optional]
 **type** | **string** |  | [optional]
+**orientation** | **string** |  | [optional]
 
 [[Back to Model list]](../../README.md#models) [[Back to API list]](../../README.md#endpoints) [[Back to README]](../../README.md)

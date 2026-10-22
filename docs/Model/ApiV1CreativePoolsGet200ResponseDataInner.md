@@ -8,6 +8,7 @@ Name | Type | Description | Notes
 **title** | **string** |  | [optional]
 **type** | **string** |  | [optional]
 **sort_type** | **string** |  | [optional]
+**orientation** | **string** |  | [optional]
 **conv_type** | **int** |  | [optional]
 **tags** | **string** | CSV of tag ids. | [optional]
 **tagids** | **string[]** |  | [optional]

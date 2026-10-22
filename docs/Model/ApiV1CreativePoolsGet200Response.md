@@ -5,6 +5,6 @@
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
 **data** | [**\GoAdServerApi\Model\ApiV1CreativePoolsGet200ResponseDataInner[]**](ApiV1CreativePoolsGet200ResponseDataInner.md) |  | [optional]
-**total** | **int** |  | [optional]
+**meta** | [**\GoAdServerApi\Model\ListMeta**](ListMeta.md) |  | [optional]
 
 [[Back to Model list]](../../README.md#models) [[Back to API list]](../../README.md#endpoints) [[Back to README]](../../README.md)

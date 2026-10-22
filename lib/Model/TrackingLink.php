@@ -1,0 +1,1124 @@
+<?php
+/**
+ * TrackingLink
+ *
+ * PHP version 8.1
+ *
+ * @category Class
+ * @package  GoAdServerApi
+ * @author   OpenAPI Generator team
+ * @link     https://openapi-generator.tech
+ */
+
+/**
+ * GoAdServer Public API
+ *
+ * Public REST API for advertisers and publishers on the GoAdServer platform.  **Authentication.** All endpoints (except `/api/public/_*`) require an API key passed as `Authorization: Bearer gas_live_…`. Create and manage keys in your account settings — each key has its own scopes, optional resource pinning, optional IP allowlist, and per-key rate limit.  **Apps (OAuth 2.0).** A tool other people connect uses an app token instead: authorization code + PKCE at `/oauth/authorize`, tokens from `/api/public/oauth/token`, passed as `Authorization: Bearer oat_…` on the same endpoints with the same scopes. See the [Build an integration](/api/docs/integrations) guide.  **System rules apply over API rules.** The public API never lets a key bypass restrictions the same user faces in the panel:  - **Source names** (`stats_source_names` right). When the user lacks   this right, advertiser stats responses return `{id, name}` with   `name` equal to the id — no human label leaks through. - **SubID encoding** (`modules.global.subid_encoding`). When enabled   for the system, the user only ever sees encoded SubIDs in the panel.   The API mirrors this both ways: `subid_excl`/`subid_incl` filter   endpoints accept the encoded form on write (decoded server-side   before storage) and emit the encoded form on read. A plain SubID   sent on write is stored as sent — a value is decoded only when it is   a genuine encoded token. - **Module gating.** Endpoints whose module is disabled for the   tenant don't appear in the spec or routes.txt at all.  **Rate limits.** Every response to an API key or app token carries the caller's budget for the current one-minute window:  | Header | Meaning | |---|---| | `X-RateLimit-Limit` | Requests per minute for this key (its `rate_limit_rpm`, default 60; an app's per-installation limit for app tokens). | | `X-RateLimit-Remaining` | Calls left in the current window. | | `X-RateLimit-Reset` | Unix seconds at which the window resets. | | `Retry-After` | On `429 rate_limited` only: seconds until a retry can succeed. |  Windows are fixed and start with the first call, so `Reset` is exact. The MCP endpoint (`POST /api/v1/mcp`) is charged per `tools/call` against its own bucket (default 240/min), and its response headers report that bucket; an exhausted MCP bucket answers the tool call with an error result rather than an HTTP 429, and the HTTP response then carries `Retry-After`.  **Idempotent writes.** Send `Idempotency-Key: <1–255 printable ASCII characters>` (a UUID is ideal) on a `POST` or `PATCH` to make a retry safe. For 24 hours per key (per app installation for app tokens):  - the first request runs and its response — status, body, `Content-Type`,   `Location`, `ETag` — is stored; - the same key with the same method, path, query and body replays that   response without running anything, adding `Idempotent-Replayed: true`; - the same key with a different request is `422 idempotency_key_reused`; - the same key while the first request is still running is   `409 idempotency_key_in_progress` (with `Retry-After: 1`).  `5xx` results are not stored — the key is released and a retry runs again. Bodies over 32 MB cannot carry the header (`413`). An invalid key is `400 invalid_idempotency_key`.  **Concurrency control (ETag / If-Match).** Every JSON `GET` response (up to 1 MB) carries a weak `ETag`, a hash of the body. Send it back:  - `If-None-Match: <etag>` on a `GET` — `304 Not Modified` when unchanged; - `If-Match: <etag>` on a `PATCH`, `PUT` or `DELETE` — the server reads the   resource's current representation (the `GET` of the same path, or of the   nearest parent path that has a `GET`: `PATCH …/campaigns/ron/7/active` is   checked against `GET …/campaigns/ron/7`) and answers   `412 precondition_failed` when it no longer matches, with the current tag in   `ETag` and `current_etag`. `If-Match: *` only requires the resource to   exist. A resource with no readable representation is also `412`.  The check is optimistic, not a lock: it closes the read-modify-write window two agents (or an agent and a person in the panel) would otherwise race in. Fields that change on their own (live spend counters) change the tag too — re-read and retry. A write response carries no new ETag; `GET` again.  **Strict fields.** Unknown body fields are a client error, not something to ignore: a request that sends a field the endpoint does not accept gets `422 unknown_fields` naming it. This is the default for keys created from 2026-10-12 (the key's `strict_fields` setting, shown on the key screen); older keys keep ignoring unknown fields (except on the few endpoints that have always refused them — the budget and on/off toggles). Override per request with `?strict=1` (reject) or `?strict=0` (ignore, everywhere). App tokens default to ignoring unknown fields; `?strict=1` opts in.  **Errors.** Every non-2xx response has the same shape:  ```json { \"error\": \"validation_error\", \"message\": \"Name is required.\", \"errors\": { \"name\": [\"Name is required.\"] } } ```  `error` is a stable machine-readable code — branch on it, never on `message`. `errors` (field → messages) appears on field-level validation failures; some codes add their own members (`scope`, `accepted_scopes`, `unknown_fields`, `current_etag`). Codes:  | Status | Codes | |---|---| | 400 | `bad_request`, `invalid_idempotency_key`, `invalid_body` | | 401 | `unauthenticated`, `invalid_api_key`, `revoked_api_key`, `expired_api_key`, `invalid_token`, `revoked_token`, `expired_token`, `user_not_found`, `account_deleted`, `account_disabled`, `admin_key_on_user_api`, `user_key_on_admin_api` | | 403 | `forbidden`, `missing_scope`, `forbidden_resource`, `ip_not_allowed`, `api_disabled`, `systemid_mismatch`, `endpoint_not_api_accessible`, `oauth_token_wrong_surface`, `mcp_not_enabled_for_app` | | 404 | `not_found` (also a disabled module or missing right — see ModuleDisabled) | | 405 | `method_not_allowed` — the `Allow` header (and the message) lists the methods the path does accept | | 409 | `conflict`, `idempotency_key_in_progress`, and resource-specific conflicts (e.g. `email_exists`) | | 412 | `precondition_failed` | | 413 | `payload_too_large` | | 422 | `validation_error`, `unknown_fields`, `idempotency_key_reused` | | 429 | `rate_limited` | | 5xx | `server_error`, `service_unavailable`, `bad_gateway`, `gateway_timeout` |  Endpoint-specific codes are listed on the endpoint. A response that would otherwise lack a code gets the generic one for its status from this table.  **Client SDKs.** Each SDK is generated from this spec and published as a public GitHub repository under the `goadserver` organization. The same tarball is also embedded in the API server and downloadable from `/api/public/sdk/<lang>.tgz` — useful when GitHub is unreachable.  > **Per-network host.** The default `https://up.go-adserver.com` > baked into the published SDKs is a reference host. Every white-label > tenant runs on its own panel domain — override the host on first use > (`setHost()` / `Configuration.host` / `basePath` etc.). Or, fetch the > spec from your own tenant (`/api/public/openapi.yaml` returns it with > *your* hostname as the default) and regenerate the SDK locally — the > regenerated client has your URL baked in.  - **PHP** — `github.com/goadserver/goadserver-php`   (namespace `GoAdServer\\Api`, composer name `goadserver/sdk`).    ```bash   composer config repositories.goadserver vcs https://github.com/goadserver/goadserver-php   composer require goadserver/sdk:dev-main   ```    ```php   $cfg = GoAdServer\\Api\\Configuration::getDefaultConfiguration()           ->setHost('https://up.go-adserver.com')           ->setAccessToken('gas_live_…');   $api = new GoAdServer\\Api\\Api\\AccountAPIApi(null, $cfg);   $me  = $api->apiV1AccountGet();   ```  - **Go** — `github.com/goadserver/goadserver-go`.    ```bash   go get github.com/goadserver/goadserver-go@latest   ```    ```go   import gas \"github.com/goadserver/goadserver-go\"    cfg := gas.NewConfiguration()   cfg.Servers = gas.ServerConfigurations{{URL: \"https://up.go-adserver.com\"}}   cli := gas.NewAPIClient(cfg)   ctx := context.WithValue(context.Background(),       gas.ContextAccessToken, \"gas_live_…\")   me, _, err := cli.AccountAPI.ApiV1AccountGet(ctx).Execute()   ```  - **Python** — `github.com/goadserver/goadserver-python` (package   `goadserver`). Pulls `pydantic` + `urllib3` automatically.    ```bash   pip install git+https://github.com/goadserver/goadserver-python.git   ```    ```python   from goadserver import ApiClient, Configuration   from goadserver.api import AccountApi, CampaignsApi    cfg = Configuration(host=\"https://up.go-adserver.com\")   cfg.access_token = \"gas_live_…\"   client = ApiClient(cfg)    me = AccountApi(client).api_v1_account_get()   camps = CampaignsApi(client).api_v1_campaigns_get(per_page=10)   ```  - **JavaScript / TypeScript** — `github.com/goadserver/goadserver-js`   (npm name `goadserver-sdk`, generator `typescript-fetch`).    ```bash   npm install github:goadserver/goadserver-js   ```    ```ts   import { Configuration, AccountApi, CampaignsApi }     from \"goadserver-sdk\";    const cfg = new Configuration({     basePath: \"https://up.go-adserver.com\",     accessToken: \"gas_live_…\",   });    const me   = await new AccountApi(cfg).apiV1AccountGet();   const list = await new CampaignsApi(cfg).apiV1CampaignsGet({ perPage: 10 });   ```    The CJS build is broadly compatible (Node + bundlers); the ESM   build is missing trailing `.js` extensions in its imports, a known   `typescript-fetch` quirk — most consumers use CJS.  **Offline / firewalled install.** If the customer's network can't reach GitHub, every SDK's source is also served as a tarball from the API host:  ```bash curl -O https://up.go-adserver.com/api/public/sdk/python.tgz tar xzf python.tgz && pip install ./python ```  Round-trip smoke tests for all four SDKs live at `clients/_smoke/` in the platform repo.
+ *
+ * The version of the OpenAPI document: 1.0.0
+ * Generated by: https://openapi-generator.tech
+ * Generator version: 7.21.0
+ */
+
+/**
+ * NOTE: This class is auto generated by OpenAPI Generator (https://openapi-generator.tech).
+ * https://openapi-generator.tech
+ * Do not edit the class manually.
+ */
+
+namespace GoAdServerApi\Model;
+
+use \ArrayAccess;
+use \GoAdServerApi\ObjectSerializer;
+
+/**
+ * TrackingLink Class Doc Comment
+ *
+ * @category Class
+ * @description A tracking link — a &#x60;publisher_adzones&#x60; row under a hidden source site. &#x60;is_smartlink&#x60; distinguishes the two shapes: a single-offer link redirects straight through, a smartlink carries several &#x60;offer_ids&#x60; and lets each offer&#39;s own targeting and eCPM pick the winner per click.
+ * @package  GoAdServerApi
+ * @author   OpenAPI Generator team
+ * @link     https://openapi-generator.tech
+ * @implements \ArrayAccess<string, mixed>
+ */
+class TrackingLink implements ModelInterface, ArrayAccess, \JsonSerializable
+{
+    public const DISCRIMINATOR = null;
+
+    /**
+     * The original name of the model.
+     *
+     * @var string
+     */
+    protected static $openAPIModelName = 'TrackingLink';
+
+    /**
+     * Array of property to type mappings. Used for (de)serialization
+     *
+     * @var string[]
+     */
+    protected static $openAPITypes = [
+        'adzone_id' => 'int',
+        'name' => 'string',
+        'siteid' => 'int',
+        'source_name' => 'string',
+        'source_description' => 'string',
+        'source_template' => 'string',
+        'url_path' => 'string',
+        'is_smartlink' => 'bool',
+        'offer_id' => 'int',
+        'offer_name' => 'string',
+        'offer_ids' => 'int[]',
+        'weights' => 'int[]',
+        'tokens' => 'string[]',
+        'tags' => 'string',
+        'date_added' => 'string',
+        'is_deleted' => 'bool',
+        'adnetwork_id' => 'int',
+        'adnetwork_name' => 'string',
+        'adnetwork_campaignid' => 'int',
+        'adnetwork_campaign_kind' => 'string',
+        'adnetwork_state' => 'string',
+        'adnetwork_auto_api' => 'bool'
+    ];
+
+    /**
+     * Array of property to format mappings. Used for (de)serialization
+     *
+     * @var string[]
+     * @phpstan-var array<string, string|null>
+     * @psalm-var array<string, string|null>
+     */
+    protected static $openAPIFormats = [
+        'adzone_id' => null,
+        'name' => null,
+        'siteid' => null,
+        'source_name' => null,
+        'source_description' => null,
+        'source_template' => null,
+        'url_path' => null,
+        'is_smartlink' => null,
+        'offer_id' => null,
+        'offer_name' => null,
+        'offer_ids' => null,
+        'weights' => null,
+        'tokens' => null,
+        'tags' => null,
+        'date_added' => null,
+        'is_deleted' => null,
+        'adnetwork_id' => null,
+        'adnetwork_name' => null,
+        'adnetwork_campaignid' => null,
+        'adnetwork_campaign_kind' => null,
+        'adnetwork_state' => null,
+        'adnetwork_auto_api' => null
+    ];
+
+    /**
+     * Array of nullable properties. Used for (de)serialization
+     *
+     * @var boolean[]
+     */
+    protected static array $openAPINullables = [
+        'adzone_id' => false,
+        'name' => false,
+        'siteid' => false,
+        'source_name' => false,
+        'source_description' => false,
+        'source_template' => false,
+        'url_path' => false,
+        'is_smartlink' => false,
+        'offer_id' => false,
+        'offer_name' => false,
+        'offer_ids' => false,
+        'weights' => false,
+        'tokens' => false,
+        'tags' => false,
+        'date_added' => false,
+        'is_deleted' => false,
+        'adnetwork_id' => false,
+        'adnetwork_name' => false,
+        'adnetwork_campaignid' => false,
+        'adnetwork_campaign_kind' => false,
+        'adnetwork_state' => false,
+        'adnetwork_auto_api' => false
+    ];
+
+    /**
+     * If a nullable field gets set to null, insert it here
+     *
+     * @var boolean[]
+     */
+    protected array $openAPINullablesSetToNull = [];
+
+    /**
+     * Array of property to type mappings. Used for (de)serialization
+     *
+     * @return array
+     */
+    public static function openAPITypes()
+    {
+        return self::$openAPITypes;
+    }
+
+    /**
+     * Array of property to format mappings. Used for (de)serialization
+     *
+     * @return array
+     */
+    public static function openAPIFormats()
+    {
+        return self::$openAPIFormats;
+    }
+
+    /**
+     * Array of nullable properties
+     *
+     * @return array
+     */
+    protected static function openAPINullables(): array
+    {
+        return self::$openAPINullables;
+    }
+
+    /**
+     * Array of nullable field names deliberately set to null
+     *
+     * @return boolean[]
+     */
+    private function getOpenAPINullablesSetToNull(): array
+    {
+        return $this->openAPINullablesSetToNull;
+    }
+
+    /**
+     * Setter - Array of nullable field names deliberately set to null
+     *
+     * @param boolean[] $openAPINullablesSetToNull
+     */
+    private function setOpenAPINullablesSetToNull(array $openAPINullablesSetToNull): void
+    {
+        $this->openAPINullablesSetToNull = $openAPINullablesSetToNull;
+    }
+
+    /**
+     * Checks if a property is nullable
+     *
+     * @param string $property
+     * @return bool
+     */
+    public static function isNullable(string $property): bool
+    {
+        return self::openAPINullables()[$property] ?? false;
+    }
+
+    /**
+     * Checks if a nullable property is set to null.
+     *
+     * @param string $property
+     * @return bool
+     */
+    public function isNullableSetToNull(string $property): bool
+    {
+        return in_array($property, $this->getOpenAPINullablesSetToNull(), true);
+    }
+
+    /**
+     * Array of attributes where the key is the local name,
+     * and the value is the original name
+     *
+     * @var string[]
+     */
+    protected static $attributeMap = [
+        'adzone_id' => 'adzone_id',
+        'name' => 'name',
+        'siteid' => 'siteid',
+        'source_name' => 'source_name',
+        'source_description' => 'source_description',
+        'source_template' => 'source_template',
+        'url_path' => 'url_path',
+        'is_smartlink' => 'is_smartlink',
+        'offer_id' => 'offer_id',
+        'offer_name' => 'offer_name',
+        'offer_ids' => 'offer_ids',
+        'weights' => 'weights',
+        'tokens' => 'tokens',
+        'tags' => 'tags',
+        'date_added' => 'date_added',
+        'is_deleted' => 'is_deleted',
+        'adnetwork_id' => 'adnetwork_id',
+        'adnetwork_name' => 'adnetwork_name',
+        'adnetwork_campaignid' => 'adnetwork_campaignid',
+        'adnetwork_campaign_kind' => 'adnetwork_campaign_kind',
+        'adnetwork_state' => 'adnetwork_state',
+        'adnetwork_auto_api' => 'adnetwork_auto_api'
+    ];
+
+    /**
+     * Array of attributes to setter functions (for deserialization of responses)
+     *
+     * @var string[]
+     */
+    protected static $setters = [
+        'adzone_id' => 'setAdzoneId',
+        'name' => 'setName',
+        'siteid' => 'setSiteid',
+        'source_name' => 'setSourceName',
+        'source_description' => 'setSourceDescription',
+        'source_template' => 'setSourceTemplate',
+        'url_path' => 'setUrlPath',
+        'is_smartlink' => 'setIsSmartlink',
+        'offer_id' => 'setOfferId',
+        'offer_name' => 'setOfferName',
+        'offer_ids' => 'setOfferIds',
+        'weights' => 'setWeights',
+        'tokens' => 'setTokens',
+        'tags' => 'setTags',
+        'date_added' => 'setDateAdded',
+        'is_deleted' => 'setIsDeleted',
+        'adnetwork_id' => 'setAdnetworkId',
+        'adnetwork_name' => 'setAdnetworkName',
+        'adnetwork_campaignid' => 'setAdnetworkCampaignid',
+        'adnetwork_campaign_kind' => 'setAdnetworkCampaignKind',
+        'adnetwork_state' => 'setAdnetworkState',
+        'adnetwork_auto_api' => 'setAdnetworkAutoApi'
+    ];
+
+    /**
+     * Array of attributes to getter functions (for serialization of requests)
+     *
+     * @var string[]
+     */
+    protected static $getters = [
+        'adzone_id' => 'getAdzoneId',
+        'name' => 'getName',
+        'siteid' => 'getSiteid',
+        'source_name' => 'getSourceName',
+        'source_description' => 'getSourceDescription',
+        'source_template' => 'getSourceTemplate',
+        'url_path' => 'getUrlPath',
+        'is_smartlink' => 'getIsSmartlink',
+        'offer_id' => 'getOfferId',
+        'offer_name' => 'getOfferName',
+        'offer_ids' => 'getOfferIds',
+        'weights' => 'getWeights',
+        'tokens' => 'getTokens',
+        'tags' => 'getTags',
+        'date_added' => 'getDateAdded',
+        'is_deleted' => 'getIsDeleted',
+        'adnetwork_id' => 'getAdnetworkId',
+        'adnetwork_name' => 'getAdnetworkName',
+        'adnetwork_campaignid' => 'getAdnetworkCampaignid',
+        'adnetwork_campaign_kind' => 'getAdnetworkCampaignKind',
+        'adnetwork_state' => 'getAdnetworkState',
+        'adnetwork_auto_api' => 'getAdnetworkAutoApi'
+    ];
+
+    /**
+     * Array of attributes where the key is the local name,
+     * and the value is the original name
+     *
+     * @return array
+     */
+    public static function attributeMap()
+    {
+        return self::$attributeMap;
+    }
+
+    /**
+     * Array of attributes to setter functions (for deserialization of responses)
+     *
+     * @return array
+     */
+    public static function setters()
+    {
+        return self::$setters;
+    }
+
+    /**
+     * Array of attributes to getter functions (for serialization of requests)
+     *
+     * @return array
+     */
+    public static function getters()
+    {
+        return self::$getters;
+    }
+
+    /**
+     * The original name of the model.
+     *
+     * @return string
+     */
+    public function getModelName()
+    {
+        return self::$openAPIModelName;
+    }
+
+
+    /**
+     * Associative array for storing property values
+     *
+     * @var mixed[]
+     */
+    protected $container = [];
+
+    /**
+     * Constructor
+     *
+     * @param mixed[]|null $data Associated array of property values
+     *                      initializing the model
+     */
+    public function __construct(?array $data = null)
+    {
+        $this->setIfExists('adzone_id', $data ?? [], null);
+        $this->setIfExists('name', $data ?? [], null);
+        $this->setIfExists('siteid', $data ?? [], null);
+        $this->setIfExists('source_name', $data ?? [], null);
+        $this->setIfExists('source_description', $data ?? [], null);
+        $this->setIfExists('source_template', $data ?? [], null);
+        $this->setIfExists('url_path', $data ?? [], null);
+        $this->setIfExists('is_smartlink', $data ?? [], null);
+        $this->setIfExists('offer_id', $data ?? [], null);
+        $this->setIfExists('offer_name', $data ?? [], null);
+        $this->setIfExists('offer_ids', $data ?? [], null);
+        $this->setIfExists('weights', $data ?? [], null);
+        $this->setIfExists('tokens', $data ?? [], null);
+        $this->setIfExists('tags', $data ?? [], null);
+        $this->setIfExists('date_added', $data ?? [], null);
+        $this->setIfExists('is_deleted', $data ?? [], null);
+        $this->setIfExists('adnetwork_id', $data ?? [], null);
+        $this->setIfExists('adnetwork_name', $data ?? [], null);
+        $this->setIfExists('adnetwork_campaignid', $data ?? [], null);
+        $this->setIfExists('adnetwork_campaign_kind', $data ?? [], null);
+        $this->setIfExists('adnetwork_state', $data ?? [], null);
+        $this->setIfExists('adnetwork_auto_api', $data ?? [], null);
+    }
+
+    /**
+     * Sets $this->container[$variableName] to the given data or to the given default Value; if $variableName
+     * is nullable and its value is set to null in the $fields array, then mark it as "set to null" in the
+     * $this->openAPINullablesSetToNull array
+     *
+     * @param string $variableName
+     * @param array  $fields
+     * @param mixed  $defaultValue
+     */
+    private function setIfExists(string $variableName, array $fields, $defaultValue): void
+    {
+        if (self::isNullable($variableName) && array_key_exists($variableName, $fields) && is_null($fields[$variableName])) {
+            $this->openAPINullablesSetToNull[] = $variableName;
+        }
+
+        $this->container[$variableName] = $fields[$variableName] ?? $defaultValue;
+    }
+
+    /**
+     * Show all the invalid properties with reasons.
+     *
+     * @return array invalid properties with reasons
+     */
+    public function listInvalidProperties()
+    {
+        $invalidProperties = [];
+
+        return $invalidProperties;
+    }
+
+    /**
+     * Validate all the properties in the model
+     * return true if all passed
+     *
+     * @return bool True if all properties are valid
+     */
+    public function valid()
+    {
+        return count($this->listInvalidProperties()) === 0;
+    }
+
+
+    /**
+     * Gets adzone_id
+     *
+     * @return int|null
+     */
+    public function getAdzoneId()
+    {
+        return $this->container['adzone_id'];
+    }
+
+    /**
+     * Sets adzone_id
+     *
+     * @param int|null $adzone_id The link's id — pass this as {id} on the link routes.
+     *
+     * @return self
+     */
+    public function setAdzoneId($adzone_id)
+    {
+        if (is_null($adzone_id)) {
+            throw new \InvalidArgumentException('non-nullable adzone_id cannot be null');
+        }
+        $this->container['adzone_id'] = $adzone_id;
+
+        return $this;
+    }
+
+    /**
+     * Gets name
+     *
+     * @return string|null
+     */
+    public function getName()
+    {
+        return $this->container['name'];
+    }
+
+    /**
+     * Sets name
+     *
+     * @param string|null $name name
+     *
+     * @return self
+     */
+    public function setName($name)
+    {
+        if (is_null($name)) {
+            throw new \InvalidArgumentException('non-nullable name cannot be null');
+        }
+        $this->container['name'] = $name;
+
+        return $this;
+    }
+
+    /**
+     * Gets siteid
+     *
+     * @return int|null
+     */
+    public function getSiteid()
+    {
+        return $this->container['siteid'];
+    }
+
+    /**
+     * Sets siteid
+     *
+     * @param int|null $siteid Traffic source the link belongs to.
+     *
+     * @return self
+     */
+    public function setSiteid($siteid)
+    {
+        if (is_null($siteid)) {
+            throw new \InvalidArgumentException('non-nullable siteid cannot be null');
+        }
+        $this->container['siteid'] = $siteid;
+
+        return $this;
+    }
+
+    /**
+     * Gets source_name
+     *
+     * @return string|null
+     */
+    public function getSourceName()
+    {
+        return $this->container['source_name'];
+    }
+
+    /**
+     * Sets source_name
+     *
+     * @param string|null $source_name source_name
+     *
+     * @return self
+     */
+    public function setSourceName($source_name)
+    {
+        if (is_null($source_name)) {
+            throw new \InvalidArgumentException('non-nullable source_name cannot be null');
+        }
+        $this->container['source_name'] = $source_name;
+
+        return $this;
+    }
+
+    /**
+     * Gets source_description
+     *
+     * @return string|null
+     */
+    public function getSourceDescription()
+    {
+        return $this->container['source_description'];
+    }
+
+    /**
+     * Sets source_description
+     *
+     * @param string|null $source_description source_description
+     *
+     * @return self
+     */
+    public function setSourceDescription($source_description)
+    {
+        if (is_null($source_description)) {
+            throw new \InvalidArgumentException('non-nullable source_description cannot be null');
+        }
+        $this->container['source_description'] = $source_description;
+
+        return $this;
+    }
+
+    /**
+     * Gets source_template
+     *
+     * @return string|null
+     */
+    public function getSourceTemplate()
+    {
+        return $this->container['source_template'];
+    }
+
+    /**
+     * Sets source_template
+     *
+     * @param string|null $source_template Macro template slug inherited from the source.
+     *
+     * @return self
+     */
+    public function setSourceTemplate($source_template)
+    {
+        if (is_null($source_template)) {
+            throw new \InvalidArgumentException('non-nullable source_template cannot be null');
+        }
+        $this->container['source_template'] = $source_template;
+
+        return $this;
+    }
+
+    /**
+     * Gets url_path
+     *
+     * @return string|null
+     */
+    public function getUrlPath()
+    {
+        return $this->container['url_path'];
+    }
+
+    /**
+     * Sets url_path
+     *
+     * @param string|null $url_path The click URL path to hand the traffic source.
+     *
+     * @return self
+     */
+    public function setUrlPath($url_path)
+    {
+        if (is_null($url_path)) {
+            throw new \InvalidArgumentException('non-nullable url_path cannot be null');
+        }
+        $this->container['url_path'] = $url_path;
+
+        return $this;
+    }
+
+    /**
+     * Gets is_smartlink
+     *
+     * @return bool|null
+     */
+    public function getIsSmartlink()
+    {
+        return $this->container['is_smartlink'];
+    }
+
+    /**
+     * Sets is_smartlink
+     *
+     * @param bool|null $is_smartlink is_smartlink
+     *
+     * @return self
+     */
+    public function setIsSmartlink($is_smartlink)
+    {
+        if (is_null($is_smartlink)) {
+            throw new \InvalidArgumentException('non-nullable is_smartlink cannot be null');
+        }
+        $this->container['is_smartlink'] = $is_smartlink;
+
+        return $this;
+    }
+
+    /**
+     * Gets offer_id
+     *
+     * @return int|null
+     */
+    public function getOfferId()
+    {
+        return $this->container['offer_id'];
+    }
+
+    /**
+     * Sets offer_id
+     *
+     * @param int|null $offer_id Bound offer on a single-offer link. 0 on a smartlink.
+     *
+     * @return self
+     */
+    public function setOfferId($offer_id)
+    {
+        if (is_null($offer_id)) {
+            throw new \InvalidArgumentException('non-nullable offer_id cannot be null');
+        }
+        $this->container['offer_id'] = $offer_id;
+
+        return $this;
+    }
+
+    /**
+     * Gets offer_name
+     *
+     * @return string|null
+     */
+    public function getOfferName()
+    {
+        return $this->container['offer_name'];
+    }
+
+    /**
+     * Sets offer_name
+     *
+     * @param string|null $offer_name offer_name
+     *
+     * @return self
+     */
+    public function setOfferName($offer_name)
+    {
+        if (is_null($offer_name)) {
+            throw new \InvalidArgumentException('non-nullable offer_name cannot be null');
+        }
+        $this->container['offer_name'] = $offer_name;
+
+        return $this;
+    }
+
+    /**
+     * Gets offer_ids
+     *
+     * @return int[]|null
+     */
+    public function getOfferIds()
+    {
+        return $this->container['offer_ids'];
+    }
+
+    /**
+     * Sets offer_ids
+     *
+     * @param int[]|null $offer_ids Offer pool on a smartlink.
+     *
+     * @return self
+     */
+    public function setOfferIds($offer_ids)
+    {
+        if (is_null($offer_ids)) {
+            throw new \InvalidArgumentException('non-nullable offer_ids cannot be null');
+        }
+        $this->container['offer_ids'] = $offer_ids;
+
+        return $this;
+    }
+
+    /**
+     * Gets weights
+     *
+     * @return int[]|null
+     */
+    public function getWeights()
+    {
+        return $this->container['weights'];
+    }
+
+    /**
+     * Sets weights
+     *
+     * @param int[]|null $weights Rotation weights, positionally matching offer_ids.
+     *
+     * @return self
+     */
+    public function setWeights($weights)
+    {
+        if (is_null($weights)) {
+            throw new \InvalidArgumentException('non-nullable weights cannot be null');
+        }
+        $this->container['weights'] = $weights;
+
+        return $this;
+    }
+
+    /**
+     * Gets tokens
+     *
+     * @return string[]|null
+     */
+    public function getTokens()
+    {
+        return $this->container['tokens'];
+    }
+
+    /**
+     * Sets tokens
+     *
+     * @param string[]|null $tokens Macro slots the click URL carries.
+     *
+     * @return self
+     */
+    public function setTokens($tokens)
+    {
+        if (is_null($tokens)) {
+            throw new \InvalidArgumentException('non-nullable tokens cannot be null');
+        }
+        $this->container['tokens'] = $tokens;
+
+        return $this;
+    }
+
+    /**
+     * Gets tags
+     *
+     * @return string|null
+     */
+    public function getTags()
+    {
+        return $this->container['tags'];
+    }
+
+    /**
+     * Sets tags
+     *
+     * @param string|null $tags tags
+     *
+     * @return self
+     */
+    public function setTags($tags)
+    {
+        if (is_null($tags)) {
+            throw new \InvalidArgumentException('non-nullable tags cannot be null');
+        }
+        $this->container['tags'] = $tags;
+
+        return $this;
+    }
+
+    /**
+     * Gets date_added
+     *
+     * @return string|null
+     */
+    public function getDateAdded()
+    {
+        return $this->container['date_added'];
+    }
+
+    /**
+     * Sets date_added
+     *
+     * @param string|null $date_added date_added
+     *
+     * @return self
+     */
+    public function setDateAdded($date_added)
+    {
+        if (is_null($date_added)) {
+            throw new \InvalidArgumentException('non-nullable date_added cannot be null');
+        }
+        $this->container['date_added'] = $date_added;
+
+        return $this;
+    }
+
+    /**
+     * Gets is_deleted
+     *
+     * @return bool|null
+     */
+    public function getIsDeleted()
+    {
+        return $this->container['is_deleted'];
+    }
+
+    /**
+     * Sets is_deleted
+     *
+     * @param bool|null $is_deleted is_deleted
+     *
+     * @return self
+     */
+    public function setIsDeleted($is_deleted)
+    {
+        if (is_null($is_deleted)) {
+            throw new \InvalidArgumentException('non-nullable is_deleted cannot be null');
+        }
+        $this->container['is_deleted'] = $is_deleted;
+
+        return $this;
+    }
+
+    /**
+     * Gets adnetwork_id
+     *
+     * @return int|null
+     */
+    public function getAdnetworkId()
+    {
+        return $this->container['adnetwork_id'];
+    }
+
+    /**
+     * Sets adnetwork_id
+     *
+     * @param int|null $adnetwork_id Bound ad network, 0 when unbound.
+     *
+     * @return self
+     */
+    public function setAdnetworkId($adnetwork_id)
+    {
+        if (is_null($adnetwork_id)) {
+            throw new \InvalidArgumentException('non-nullable adnetwork_id cannot be null');
+        }
+        $this->container['adnetwork_id'] = $adnetwork_id;
+
+        return $this;
+    }
+
+    /**
+     * Gets adnetwork_name
+     *
+     * @return string|null
+     */
+    public function getAdnetworkName()
+    {
+        return $this->container['adnetwork_name'];
+    }
+
+    /**
+     * Sets adnetwork_name
+     *
+     * @param string|null $adnetwork_name adnetwork_name
+     *
+     * @return self
+     */
+    public function setAdnetworkName($adnetwork_name)
+    {
+        if (is_null($adnetwork_name)) {
+            throw new \InvalidArgumentException('non-nullable adnetwork_name cannot be null');
+        }
+        $this->container['adnetwork_name'] = $adnetwork_name;
+
+        return $this;
+    }
+
+    /**
+     * Gets adnetwork_campaignid
+     *
+     * @return int|null
+     */
+    public function getAdnetworkCampaignid()
+    {
+        return $this->container['adnetwork_campaignid'];
+    }
+
+    /**
+     * Sets adnetwork_campaignid
+     *
+     * @param int|null $adnetwork_campaignid adnetwork_campaignid
+     *
+     * @return self
+     */
+    public function setAdnetworkCampaignid($adnetwork_campaignid)
+    {
+        if (is_null($adnetwork_campaignid)) {
+            throw new \InvalidArgumentException('non-nullable adnetwork_campaignid cannot be null');
+        }
+        $this->container['adnetwork_campaignid'] = $adnetwork_campaignid;
+
+        return $this;
+    }
+
+    /**
+     * Gets adnetwork_campaign_kind
+     *
+     * @return string|null
+     */
+    public function getAdnetworkCampaignKind()
+    {
+        return $this->container['adnetwork_campaign_kind'];
+    }
+
+    /**
+     * Sets adnetwork_campaign_kind
+     *
+     * @param string|null $adnetwork_campaign_kind adnetwork_campaign_kind
+     *
+     * @return self
+     */
+    public function setAdnetworkCampaignKind($adnetwork_campaign_kind)
+    {
+        if (is_null($adnetwork_campaign_kind)) {
+            throw new \InvalidArgumentException('non-nullable adnetwork_campaign_kind cannot be null');
+        }
+        $this->container['adnetwork_campaign_kind'] = $adnetwork_campaign_kind;
+
+        return $this;
+    }
+
+    /**
+     * Gets adnetwork_state
+     *
+     * @return string|null
+     */
+    public function getAdnetworkState()
+    {
+        return $this->container['adnetwork_state'];
+    }
+
+    /**
+     * Sets adnetwork_state
+     *
+     * @param string|null $adnetwork_state adnetwork_state
+     *
+     * @return self
+     */
+    public function setAdnetworkState($adnetwork_state)
+    {
+        if (is_null($adnetwork_state)) {
+            throw new \InvalidArgumentException('non-nullable adnetwork_state cannot be null');
+        }
+        $this->container['adnetwork_state'] = $adnetwork_state;
+
+        return $this;
+    }
+
+    /**
+     * Gets adnetwork_auto_api
+     *
+     * @return bool|null
+     */
+    public function getAdnetworkAutoApi()
+    {
+        return $this->container['adnetwork_auto_api'];
+    }
+
+    /**
+     * Sets adnetwork_auto_api
+     *
+     * @param bool|null $adnetwork_auto_api Whether rules may push changes back to the network.
+     *
+     * @return self
+     */
+    public function setAdnetworkAutoApi($adnetwork_auto_api)
+    {
+        if (is_null($adnetwork_auto_api)) {
+            throw new \InvalidArgumentException('non-nullable adnetwork_auto_api cannot be null');
+        }
+        $this->container['adnetwork_auto_api'] = $adnetwork_auto_api;
+
+        return $this;
+    }
+    /**
+     * Returns true if offset exists. False otherwise.
+     *
+     * @param integer|string $offset Offset
+     *
+     * @return boolean
+     */
+    public function offsetExists(mixed $offset): bool
+    {
+        return isset($this->container[$offset]);
+    }
+
+    /**
+     * Gets offset.
+     *
+     * @param integer|string $offset Offset
+     *
+     * @return mixed|null
+     */
+    #[\ReturnTypeWillChange]
+    public function offsetGet(mixed $offset)
+    {
+        return $this->container[$offset] ?? null;
+    }
+
+    /**
+     * Sets value based on offset.
+     *
+     * @param int|null $offset Offset
+     * @param mixed    $value  Value to be set
+     *
+     * @return void
+     */
+    public function offsetSet($offset, $value): void
+    {
+        if (is_null($offset)) {
+            $this->container[] = $value;
+        } else {
+            $this->container[$offset] = $value;
+        }
+    }
+
+    /**
+     * Unsets offset.
+     *
+     * @param integer|string $offset Offset
+     *
+     * @return void
+     */
+    public function offsetUnset(mixed $offset): void
+    {
+        unset($this->container[$offset]);
+    }
+
+    /**
+     * Serializes the object to a value that can be serialized natively by json_encode().
+     * @link https://www.php.net/manual/en/jsonserializable.jsonserialize.php
+     *
+     * @return mixed Returns data which can be serialized by json_encode(), which is a value
+     * of any type other than a resource.
+     */
+    #[\ReturnTypeWillChange]
+    public function jsonSerialize()
+    {
+       return ObjectSerializer::sanitizeForSerialization($this);
+    }
+
+    /**
+     * Gets the string presentation of the object
+     *
+     * @return string
+     */
+    public function __toString()
+    {
+        return json_encode(
+            ObjectSerializer::sanitizeForSerialization($this),
+            JSON_PRETTY_PRINT
+        );
+    }
+
+    /**
+     * Gets a header-safe presentation of the object
+     *
+     * @return string
+     */
+    public function toHeaderValue()
+    {
+        return json_encode(ObjectSerializer::sanitizeForSerialization($this));
+    }
+}
+
+

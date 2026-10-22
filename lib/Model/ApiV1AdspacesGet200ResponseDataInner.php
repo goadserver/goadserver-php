@@ -13,7 +13,7 @@
 /**
  * GoAdServer Public API
  *
- * Public REST API for advertisers and publishers on the GoAdServer platform.  **Authentication.** All endpoints (except `/api/public/_*`) require an API key passed as `Authorization: Bearer gas_live_…`. Create and manage keys in your account settings — each key has its own scopes, optional resource pinning, optional IP allowlist, and per-key rate limit.  **System rules apply over API rules.** The public API never lets a key bypass restrictions the same user faces in the panel:  - **Source names** (`stats_source_names` right). When the user lacks   this right, advertiser stats responses return `{id, name}` with   `name` equal to the id — no human label leaks through. - **SubID encoding** (`modules.global.subid_encoding`). When enabled   for the system, the user only ever sees encoded SubIDs in the panel.   The API mirrors this both ways: `subid_excl`/`subid_incl` filter   endpoints accept the encoded form on write (decoded server-side   before storage) and emit the encoded form on read. - **Module gating.** Endpoints whose module is disabled for the   tenant don't appear in the spec or routes.txt at all.  **Client SDKs.** Each SDK is generated from this spec and published as a public GitHub repository under the `goadserver` organization. The same tarball is also embedded in the API server and downloadable from `/api/public/sdk/<lang>.tgz` — useful when GitHub is unreachable.  > **Per-network host.** The default `https://up.go-adserver.com` > baked into the published SDKs is a reference host. Every white-label > tenant runs on its own panel domain — override the host on first use > (`setHost()` / `Configuration.host` / `basePath` etc.). Or, fetch the > spec from your own tenant (`/api/public/openapi.yaml` returns it with > *your* hostname as the default) and regenerate the SDK locally — the > regenerated client has your URL baked in.  - **PHP** — `github.com/goadserver/goadserver-php`   (namespace `GoAdServer\\Api`, composer name `goadserver/sdk`).    ```bash   composer config repositories.goadserver vcs https://github.com/goadserver/goadserver-php   composer require goadserver/sdk:dev-main   ```    ```php   $cfg = GoAdServer\\Api\\Configuration::getDefaultConfiguration()           ->setHost('https://up.go-adserver.com')           ->setAccessToken('gas_live_…');   $api = new GoAdServer\\Api\\Api\\AccountAPIApi(null, $cfg);   $me  = $api->apiV1AccountGet();   ```  - **Go** — `github.com/goadserver/goadserver-go`.    ```bash   go get github.com/goadserver/goadserver-go@latest   ```    ```go   import gas \"github.com/goadserver/goadserver-go\"    cfg := gas.NewConfiguration()   cfg.Servers = gas.ServerConfigurations{{URL: \"https://up.go-adserver.com\"}}   cli := gas.NewAPIClient(cfg)   ctx := context.WithValue(context.Background(),       gas.ContextAccessToken, \"gas_live_…\")   me, _, err := cli.AccountAPI.ApiV1AccountGet(ctx).Execute()   ```  - **Python** — `github.com/goadserver/goadserver-python` (package   `goadserver`). Pulls `pydantic` + `urllib3` automatically.    ```bash   pip install git+https://github.com/goadserver/goadserver-python.git   ```    ```python   from goadserver import ApiClient, Configuration   from goadserver.api import AccountApi, CampaignsApi    cfg = Configuration(host=\"https://up.go-adserver.com\")   cfg.access_token = \"gas_live_…\"   client = ApiClient(cfg)    me = AccountApi(client).api_v1_account_get()   camps = CampaignsApi(client).api_v1_campaigns_get(per_page=10)   ```  - **JavaScript / TypeScript** — `github.com/goadserver/goadserver-js`   (npm name `goadserver-sdk`, generator `typescript-fetch`).    ```bash   npm install github:goadserver/goadserver-js   ```    ```ts   import { Configuration, AccountApi, CampaignsApi }     from \"goadserver-sdk\";    const cfg = new Configuration({     basePath: \"https://up.go-adserver.com\",     accessToken: \"gas_live_…\",   });    const me   = await new AccountApi(cfg).apiV1AccountGet();   const list = await new CampaignsApi(cfg).apiV1CampaignsGet({ perPage: 10 });   ```    The CJS build is broadly compatible (Node + bundlers); the ESM   build is missing trailing `.js` extensions in its imports, a known   `typescript-fetch` quirk — most consumers use CJS.  **Offline / firewalled install.** If the customer's network can't reach GitHub, every SDK's source is also served as a tarball from the API host:  ```bash curl -O https://up.go-adserver.com/api/public/sdk/python.tgz tar xzf python.tgz && pip install ./python ```  Round-trip smoke tests for all four SDKs live at `clients/_smoke/` in the platform repo.
+ * Public REST API for advertisers and publishers on the GoAdServer platform.  **Authentication.** All endpoints (except `/api/public/_*`) require an API key passed as `Authorization: Bearer gas_live_…`. Create and manage keys in your account settings — each key has its own scopes, optional resource pinning, optional IP allowlist, and per-key rate limit.  **Apps (OAuth 2.0).** A tool other people connect uses an app token instead: authorization code + PKCE at `/oauth/authorize`, tokens from `/api/public/oauth/token`, passed as `Authorization: Bearer oat_…` on the same endpoints with the same scopes. See the [Build an integration](/api/docs/integrations) guide.  **System rules apply over API rules.** The public API never lets a key bypass restrictions the same user faces in the panel:  - **Source names** (`stats_source_names` right). When the user lacks   this right, advertiser stats responses return `{id, name}` with   `name` equal to the id — no human label leaks through. - **SubID encoding** (`modules.global.subid_encoding`). When enabled   for the system, the user only ever sees encoded SubIDs in the panel.   The API mirrors this both ways: `subid_excl`/`subid_incl` filter   endpoints accept the encoded form on write (decoded server-side   before storage) and emit the encoded form on read. A plain SubID   sent on write is stored as sent — a value is decoded only when it is   a genuine encoded token. - **Module gating.** Endpoints whose module is disabled for the   tenant don't appear in the spec or routes.txt at all.  **Rate limits.** Every response to an API key or app token carries the caller's budget for the current one-minute window:  | Header | Meaning | |---|---| | `X-RateLimit-Limit` | Requests per minute for this key (its `rate_limit_rpm`, default 60; an app's per-installation limit for app tokens). | | `X-RateLimit-Remaining` | Calls left in the current window. | | `X-RateLimit-Reset` | Unix seconds at which the window resets. | | `Retry-After` | On `429 rate_limited` only: seconds until a retry can succeed. |  Windows are fixed and start with the first call, so `Reset` is exact. The MCP endpoint (`POST /api/v1/mcp`) is charged per `tools/call` against its own bucket (default 240/min), and its response headers report that bucket; an exhausted MCP bucket answers the tool call with an error result rather than an HTTP 429, and the HTTP response then carries `Retry-After`.  **Idempotent writes.** Send `Idempotency-Key: <1–255 printable ASCII characters>` (a UUID is ideal) on a `POST` or `PATCH` to make a retry safe. For 24 hours per key (per app installation for app tokens):  - the first request runs and its response — status, body, `Content-Type`,   `Location`, `ETag` — is stored; - the same key with the same method, path, query and body replays that   response without running anything, adding `Idempotent-Replayed: true`; - the same key with a different request is `422 idempotency_key_reused`; - the same key while the first request is still running is   `409 idempotency_key_in_progress` (with `Retry-After: 1`).  `5xx` results are not stored — the key is released and a retry runs again. Bodies over 32 MB cannot carry the header (`413`). An invalid key is `400 invalid_idempotency_key`.  **Concurrency control (ETag / If-Match).** Every JSON `GET` response (up to 1 MB) carries a weak `ETag`, a hash of the body. Send it back:  - `If-None-Match: <etag>` on a `GET` — `304 Not Modified` when unchanged; - `If-Match: <etag>` on a `PATCH`, `PUT` or `DELETE` — the server reads the   resource's current representation (the `GET` of the same path, or of the   nearest parent path that has a `GET`: `PATCH …/campaigns/ron/7/active` is   checked against `GET …/campaigns/ron/7`) and answers   `412 precondition_failed` when it no longer matches, with the current tag in   `ETag` and `current_etag`. `If-Match: *` only requires the resource to   exist. A resource with no readable representation is also `412`.  The check is optimistic, not a lock: it closes the read-modify-write window two agents (or an agent and a person in the panel) would otherwise race in. Fields that change on their own (live spend counters) change the tag too — re-read and retry. A write response carries no new ETag; `GET` again.  **Strict fields.** Unknown body fields are a client error, not something to ignore: a request that sends a field the endpoint does not accept gets `422 unknown_fields` naming it. This is the default for keys created from 2026-10-12 (the key's `strict_fields` setting, shown on the key screen); older keys keep ignoring unknown fields (except on the few endpoints that have always refused them — the budget and on/off toggles). Override per request with `?strict=1` (reject) or `?strict=0` (ignore, everywhere). App tokens default to ignoring unknown fields; `?strict=1` opts in.  **Errors.** Every non-2xx response has the same shape:  ```json { \"error\": \"validation_error\", \"message\": \"Name is required.\", \"errors\": { \"name\": [\"Name is required.\"] } } ```  `error` is a stable machine-readable code — branch on it, never on `message`. `errors` (field → messages) appears on field-level validation failures; some codes add their own members (`scope`, `accepted_scopes`, `unknown_fields`, `current_etag`). Codes:  | Status | Codes | |---|---| | 400 | `bad_request`, `invalid_idempotency_key`, `invalid_body` | | 401 | `unauthenticated`, `invalid_api_key`, `revoked_api_key`, `expired_api_key`, `invalid_token`, `revoked_token`, `expired_token`, `user_not_found`, `account_deleted`, `account_disabled`, `admin_key_on_user_api`, `user_key_on_admin_api` | | 403 | `forbidden`, `missing_scope`, `forbidden_resource`, `ip_not_allowed`, `api_disabled`, `systemid_mismatch`, `endpoint_not_api_accessible`, `oauth_token_wrong_surface`, `mcp_not_enabled_for_app` | | 404 | `not_found` (also a disabled module or missing right — see ModuleDisabled) | | 405 | `method_not_allowed` — the `Allow` header (and the message) lists the methods the path does accept | | 409 | `conflict`, `idempotency_key_in_progress`, and resource-specific conflicts (e.g. `email_exists`) | | 412 | `precondition_failed` | | 413 | `payload_too_large` | | 422 | `validation_error`, `unknown_fields`, `idempotency_key_reused` | | 429 | `rate_limited` | | 5xx | `server_error`, `service_unavailable`, `bad_gateway`, `gateway_timeout` |  Endpoint-specific codes are listed on the endpoint. A response that would otherwise lack a code gets the generic one for its status from this table.  **Client SDKs.** Each SDK is generated from this spec and published as a public GitHub repository under the `goadserver` organization. The same tarball is also embedded in the API server and downloadable from `/api/public/sdk/<lang>.tgz` — useful when GitHub is unreachable.  > **Per-network host.** The default `https://up.go-adserver.com` > baked into the published SDKs is a reference host. Every white-label > tenant runs on its own panel domain — override the host on first use > (`setHost()` / `Configuration.host` / `basePath` etc.). Or, fetch the > spec from your own tenant (`/api/public/openapi.yaml` returns it with > *your* hostname as the default) and regenerate the SDK locally — the > regenerated client has your URL baked in.  - **PHP** — `github.com/goadserver/goadserver-php`   (namespace `GoAdServer\\Api`, composer name `goadserver/sdk`).    ```bash   composer config repositories.goadserver vcs https://github.com/goadserver/goadserver-php   composer require goadserver/sdk:dev-main   ```    ```php   $cfg = GoAdServer\\Api\\Configuration::getDefaultConfiguration()           ->setHost('https://up.go-adserver.com')           ->setAccessToken('gas_live_…');   $api = new GoAdServer\\Api\\Api\\AccountAPIApi(null, $cfg);   $me  = $api->apiV1AccountGet();   ```  - **Go** — `github.com/goadserver/goadserver-go`.    ```bash   go get github.com/goadserver/goadserver-go@latest   ```    ```go   import gas \"github.com/goadserver/goadserver-go\"    cfg := gas.NewConfiguration()   cfg.Servers = gas.ServerConfigurations{{URL: \"https://up.go-adserver.com\"}}   cli := gas.NewAPIClient(cfg)   ctx := context.WithValue(context.Background(),       gas.ContextAccessToken, \"gas_live_…\")   me, _, err := cli.AccountAPI.ApiV1AccountGet(ctx).Execute()   ```  - **Python** — `github.com/goadserver/goadserver-python` (package   `goadserver`). Pulls `pydantic` + `urllib3` automatically.    ```bash   pip install git+https://github.com/goadserver/goadserver-python.git   ```    ```python   from goadserver import ApiClient, Configuration   from goadserver.api import AccountApi, CampaignsApi    cfg = Configuration(host=\"https://up.go-adserver.com\")   cfg.access_token = \"gas_live_…\"   client = ApiClient(cfg)    me = AccountApi(client).api_v1_account_get()   camps = CampaignsApi(client).api_v1_campaigns_get(per_page=10)   ```  - **JavaScript / TypeScript** — `github.com/goadserver/goadserver-js`   (npm name `goadserver-sdk`, generator `typescript-fetch`).    ```bash   npm install github:goadserver/goadserver-js   ```    ```ts   import { Configuration, AccountApi, CampaignsApi }     from \"goadserver-sdk\";    const cfg = new Configuration({     basePath: \"https://up.go-adserver.com\",     accessToken: \"gas_live_…\",   });    const me   = await new AccountApi(cfg).apiV1AccountGet();   const list = await new CampaignsApi(cfg).apiV1CampaignsGet({ perPage: 10 });   ```    The CJS build is broadly compatible (Node + bundlers); the ESM   build is missing trailing `.js` extensions in its imports, a known   `typescript-fetch` quirk — most consumers use CJS.  **Offline / firewalled install.** If the customer's network can't reach GitHub, every SDK's source is also served as a tarball from the API host:  ```bash curl -O https://up.go-adserver.com/api/public/sdk/python.tgz tar xzf python.tgz && pip install ./python ```  Round-trip smoke tests for all four SDKs live at `clients/_smoke/` in the platform repo.
  *
  * The version of the OpenAPI document: 1.0.0
  * Generated by: https://openapi-generator.tech
@@ -59,9 +59,18 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
     protected static $openAPITypes = [
         'id' => 'int',
         'name' => 'string',
-        'site' => '\GoAdServerApi\Model\ApiV1AdspacesGet200ResponseDataInnerSite',
+        'site' => '\GoAdServerApi\Model\ApiV1TrackingConversionTypesPut200ResponseConversionTypesInner',
+        'siteid' => 'int',
+        'adspace_type' => 'string',
+        'adzone_typeid' => 'int',
+        'adtype_id' => 'int',
         'ad_type' => 'int',
-        'is_active' => 'bool'
+        'adsizeid' => 'int',
+        'is_active' => 'bool',
+        'date_added' => '\DateTime',
+        'time_changed' => 'int',
+        'is_deleted' => 'bool',
+        'parentid' => 'int'
     ];
 
     /**
@@ -75,8 +84,17 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
         'id' => null,
         'name' => null,
         'site' => null,
+        'siteid' => null,
+        'adspace_type' => null,
+        'adzone_typeid' => null,
+        'adtype_id' => null,
         'ad_type' => null,
-        'is_active' => null
+        'adsizeid' => null,
+        'is_active' => null,
+        'date_added' => 'date-time',
+        'time_changed' => null,
+        'is_deleted' => null,
+        'parentid' => null
     ];
 
     /**
@@ -88,8 +106,17 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
         'id' => false,
         'name' => false,
         'site' => false,
+        'siteid' => false,
+        'adspace_type' => false,
+        'adzone_typeid' => false,
+        'adtype_id' => false,
         'ad_type' => false,
-        'is_active' => false
+        'adsizeid' => false,
+        'is_active' => false,
+        'date_added' => false,
+        'time_changed' => false,
+        'is_deleted' => false,
+        'parentid' => false
     ];
 
     /**
@@ -181,8 +208,17 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
         'id' => 'id',
         'name' => 'name',
         'site' => 'site',
+        'siteid' => 'siteid',
+        'adspace_type' => 'adspace_type',
+        'adzone_typeid' => 'adzone_typeid',
+        'adtype_id' => 'adtype_id',
         'ad_type' => 'ad_type',
-        'is_active' => 'is_active'
+        'adsizeid' => 'adsizeid',
+        'is_active' => 'is_active',
+        'date_added' => 'date_added',
+        'time_changed' => 'time_changed',
+        'is_deleted' => 'is_deleted',
+        'parentid' => 'parentid'
     ];
 
     /**
@@ -194,8 +230,17 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
         'id' => 'setId',
         'name' => 'setName',
         'site' => 'setSite',
+        'siteid' => 'setSiteid',
+        'adspace_type' => 'setAdspaceType',
+        'adzone_typeid' => 'setAdzoneTypeid',
+        'adtype_id' => 'setAdtypeId',
         'ad_type' => 'setAdType',
-        'is_active' => 'setIsActive'
+        'adsizeid' => 'setAdsizeid',
+        'is_active' => 'setIsActive',
+        'date_added' => 'setDateAdded',
+        'time_changed' => 'setTimeChanged',
+        'is_deleted' => 'setIsDeleted',
+        'parentid' => 'setParentid'
     ];
 
     /**
@@ -207,8 +252,17 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
         'id' => 'getId',
         'name' => 'getName',
         'site' => 'getSite',
+        'siteid' => 'getSiteid',
+        'adspace_type' => 'getAdspaceType',
+        'adzone_typeid' => 'getAdzoneTypeid',
+        'adtype_id' => 'getAdtypeId',
         'ad_type' => 'getAdType',
-        'is_active' => 'getIsActive'
+        'adsizeid' => 'getAdsizeid',
+        'is_active' => 'getIsActive',
+        'date_added' => 'getDateAdded',
+        'time_changed' => 'getTimeChanged',
+        'is_deleted' => 'getIsDeleted',
+        'parentid' => 'getParentid'
     ];
 
     /**
@@ -271,8 +325,17 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
         $this->setIfExists('id', $data ?? [], null);
         $this->setIfExists('name', $data ?? [], null);
         $this->setIfExists('site', $data ?? [], null);
+        $this->setIfExists('siteid', $data ?? [], null);
+        $this->setIfExists('adspace_type', $data ?? [], null);
+        $this->setIfExists('adzone_typeid', $data ?? [], null);
+        $this->setIfExists('adtype_id', $data ?? [], null);
         $this->setIfExists('ad_type', $data ?? [], null);
+        $this->setIfExists('adsizeid', $data ?? [], null);
         $this->setIfExists('is_active', $data ?? [], null);
+        $this->setIfExists('date_added', $data ?? [], null);
+        $this->setIfExists('time_changed', $data ?? [], null);
+        $this->setIfExists('is_deleted', $data ?? [], null);
+        $this->setIfExists('parentid', $data ?? [], null);
     }
 
     /**
@@ -374,7 +437,7 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
     /**
      * Gets site
      *
-     * @return \GoAdServerApi\Model\ApiV1AdspacesGet200ResponseDataInnerSite|null
+     * @return \GoAdServerApi\Model\ApiV1TrackingConversionTypesPut200ResponseConversionTypesInner|null
      */
     public function getSite()
     {
@@ -384,7 +447,7 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
     /**
      * Sets site
      *
-     * @param \GoAdServerApi\Model\ApiV1AdspacesGet200ResponseDataInnerSite|null $site site
+     * @param \GoAdServerApi\Model\ApiV1TrackingConversionTypesPut200ResponseConversionTypesInner|null $site site
      *
      * @return self
      */
@@ -394,6 +457,114 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
             throw new \InvalidArgumentException('non-nullable site cannot be null');
         }
         $this->container['site'] = $site;
+
+        return $this;
+    }
+
+    /**
+     * Gets siteid
+     *
+     * @return int|null
+     */
+    public function getSiteid()
+    {
+        return $this->container['siteid'];
+    }
+
+    /**
+     * Sets siteid
+     *
+     * @param int|null $siteid siteid
+     *
+     * @return self
+     */
+    public function setSiteid($siteid)
+    {
+        if (is_null($siteid)) {
+            throw new \InvalidArgumentException('non-nullable siteid cannot be null');
+        }
+        $this->container['siteid'] = $siteid;
+
+        return $this;
+    }
+
+    /**
+     * Gets adspace_type
+     *
+     * @return string|null
+     */
+    public function getAdspaceType()
+    {
+        return $this->container['adspace_type'];
+    }
+
+    /**
+     * Sets adspace_type
+     *
+     * @param string|null $adspace_type Type config key (e.g. bannerads). Empty when the underlying type is no longer in the tenant config.
+     *
+     * @return self
+     */
+    public function setAdspaceType($adspace_type)
+    {
+        if (is_null($adspace_type)) {
+            throw new \InvalidArgumentException('non-nullable adspace_type cannot be null');
+        }
+        $this->container['adspace_type'] = $adspace_type;
+
+        return $this;
+    }
+
+    /**
+     * Gets adzone_typeid
+     *
+     * @return int|null
+     */
+    public function getAdzoneTypeid()
+    {
+        return $this->container['adzone_typeid'];
+    }
+
+    /**
+     * Sets adzone_typeid
+     *
+     * @param int|null $adzone_typeid adzone_typeid
+     *
+     * @return self
+     */
+    public function setAdzoneTypeid($adzone_typeid)
+    {
+        if (is_null($adzone_typeid)) {
+            throw new \InvalidArgumentException('non-nullable adzone_typeid cannot be null');
+        }
+        $this->container['adzone_typeid'] = $adzone_typeid;
+
+        return $this;
+    }
+
+    /**
+     * Gets adtype_id
+     *
+     * @return int|null
+     */
+    public function getAdtypeId()
+    {
+        return $this->container['adtype_id'];
+    }
+
+    /**
+     * Sets adtype_id
+     *
+     * @param int|null $adtype_id adtype_id
+     *
+     * @return self
+     */
+    public function setAdtypeId($adtype_id)
+    {
+        if (is_null($adtype_id)) {
+            throw new \InvalidArgumentException('non-nullable adtype_id cannot be null');
+        }
+        $this->container['adtype_id'] = $adtype_id;
 
         return $this;
     }
@@ -411,7 +582,7 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
     /**
      * Sets ad_type
      *
-     * @param int|null $ad_type ad_type
+     * @param int|null $ad_type Backward-compat alias for adtype_id.
      *
      * @return self
      */
@@ -421,6 +592,33 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
             throw new \InvalidArgumentException('non-nullable ad_type cannot be null');
         }
         $this->container['ad_type'] = $ad_type;
+
+        return $this;
+    }
+
+    /**
+     * Gets adsizeid
+     *
+     * @return int|null
+     */
+    public function getAdsizeid()
+    {
+        return $this->container['adsizeid'];
+    }
+
+    /**
+     * Sets adsizeid
+     *
+     * @param int|null $adsizeid adsizeid
+     *
+     * @return self
+     */
+    public function setAdsizeid($adsizeid)
+    {
+        if (is_null($adsizeid)) {
+            throw new \InvalidArgumentException('non-nullable adsizeid cannot be null');
+        }
+        $this->container['adsizeid'] = $adsizeid;
 
         return $this;
     }
@@ -438,7 +636,7 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
     /**
      * Sets is_active
      *
-     * @param bool|null $is_active is_active
+     * @param bool|null $is_active Derived from publisher_adzones.isinuse.
      *
      * @return self
      */
@@ -448,6 +646,114 @@ class ApiV1AdspacesGet200ResponseDataInner implements ModelInterface, ArrayAcces
             throw new \InvalidArgumentException('non-nullable is_active cannot be null');
         }
         $this->container['is_active'] = $is_active;
+
+        return $this;
+    }
+
+    /**
+     * Gets date_added
+     *
+     * @return \DateTime|null
+     */
+    public function getDateAdded()
+    {
+        return $this->container['date_added'];
+    }
+
+    /**
+     * Sets date_added
+     *
+     * @param \DateTime|null $date_added date_added
+     *
+     * @return self
+     */
+    public function setDateAdded($date_added)
+    {
+        if (is_null($date_added)) {
+            throw new \InvalidArgumentException('non-nullable date_added cannot be null');
+        }
+        $this->container['date_added'] = $date_added;
+
+        return $this;
+    }
+
+    /**
+     * Gets time_changed
+     *
+     * @return int|null
+     */
+    public function getTimeChanged()
+    {
+        return $this->container['time_changed'];
+    }
+
+    /**
+     * Sets time_changed
+     *
+     * @param int|null $time_changed Unix seconds of last update.
+     *
+     * @return self
+     */
+    public function setTimeChanged($time_changed)
+    {
+        if (is_null($time_changed)) {
+            throw new \InvalidArgumentException('non-nullable time_changed cannot be null');
+        }
+        $this->container['time_changed'] = $time_changed;
+
+        return $this;
+    }
+
+    /**
+     * Gets is_deleted
+     *
+     * @return bool|null
+     */
+    public function getIsDeleted()
+    {
+        return $this->container['is_deleted'];
+    }
+
+    /**
+     * Sets is_deleted
+     *
+     * @param bool|null $is_deleted is_deleted
+     *
+     * @return self
+     */
+    public function setIsDeleted($is_deleted)
+    {
+        if (is_null($is_deleted)) {
+            throw new \InvalidArgumentException('non-nullable is_deleted cannot be null');
+        }
+        $this->container['is_deleted'] = $is_deleted;
+
+        return $this;
+    }
+
+    /**
+     * Gets parentid
+     *
+     * @return int|null
+     */
+    public function getParentid()
+    {
+        return $this->container['parentid'];
+    }
+
+    /**
+     * Sets parentid
+     *
+     * @param int|null $parentid parentid
+     *
+     * @return self
+     */
+    public function setParentid($parentid)
+    {
+        if (is_null($parentid)) {
+            throw new \InvalidArgumentException('non-nullable parentid cannot be null');
+        }
+        $this->container['parentid'] = $parentid;
 
         return $this;
     }

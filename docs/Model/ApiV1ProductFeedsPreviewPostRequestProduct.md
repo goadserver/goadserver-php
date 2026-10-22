@@ -1,0 +1,13 @@
+# ApiV1ProductFeedsPreviewPostRequestProduct
+
+## Properties
+
+Name | Type | Description | Notes
+------------ | ------------- | ------------- | -------------
+**title** | **string** |  | [optional]
+**price** | **string** |  | [optional]
+**image_link** | **string** |  | [optional]
+**link** | **string** |  | [optional]
+**description** | **string** |  | [optional]
+
+[[Back to Model list]](../../README.md#models) [[Back to API list]](../../README.md#endpoints) [[Back to README]](../../README.md)

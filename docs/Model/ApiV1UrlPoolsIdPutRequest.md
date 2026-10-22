@@ -5,7 +5,7 @@
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
 **title** | **string** |  | [optional]
-**sort_type** | **string** |  | [optional]
+**sort_type** | **string** | Any other value (incl. ctr) is a 400. | [optional]
 **conv_type** | **int** |  | [optional]
 **tags** | **string** |  | [optional]
 
